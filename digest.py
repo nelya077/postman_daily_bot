@@ -1,16 +1,22 @@
 import asyncio
 import html
 import logging
+import os
+import re
 import time
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 
 import db
-from fetcher import fetch_source
+import llm
+from fetcher import fetch_source, search_google_news
 from sources import CATALOG
+from topics import expand
 
 log = logging.getLogger(__name__)
+
+POOL_SIZE = 60  # сколько свежих новостей отдаём модели на отбор
 
 
 def selected_sources(user: dict) -> list[str]:
@@ -18,11 +24,12 @@ def selected_sources(user: dict) -> list[str]:
     return keys or list(CATALOG)  # пусто = все источники
 
 
-def parse_topics(user: dict) -> list[str]:
-    return [t.strip().lower() for t in user["topics"].split(",") if t.strip()]
+def user_topics(user: dict) -> list[str]:
+    return [t.strip() for t in user["topics"].split(",") if t.strip()]
 
 
-async def build_digest(chat_id: int, user: dict) -> list[dict]:
+async def _collect(chat_id: int, user: dict) -> list[dict]:
+    """Свежие, ещё не отправленные новости из выбранных источников, без дублей."""
     keys = selected_sources(user)
     results = await asyncio.gather(*(fetch_source(k) for k in keys), return_exceptions=True)
     items = []
@@ -31,10 +38,6 @@ async def build_digest(chat_id: int, user: dict) -> list[dict]:
             log.warning("Источник %s недоступен: %s", key, res)
             continue
         items.extend(res)
-
-    topics = parse_topics(user)
-    if topics:
-        items = [i for i in items if any(t in f"{i['title']} {i['summary']}".lower() for t in topics)]
 
     sent = await db.get_sent(chat_id, [i["link"] for i in items if i["link"]])
     items = [i for i in items if i["link"] and i["link"] not in sent]
@@ -46,7 +49,61 @@ async def build_digest(chat_id: int, user: dict) -> list[dict]:
             continue
         seen.add(key)
         unique.append(i)
-    return unique[: user["limit_n"]]
+    return unique
+
+
+def _keyword_filter(items: list[dict], topics: list[str]) -> list[dict]:
+    terms = expand(topics)
+    if not terms:
+        return items
+    patterns = [re.compile(r"\b" + re.escape(t), re.IGNORECASE) for t in terms]
+    return [i for i in items if any(p.search(f"{i['title']} {i['summary']}") for p in patterns)]
+
+
+async def build_digest(chat_id: int, user: dict) -> list[dict]:
+    topics = user_topics(user)
+    limit = user["limit_n"]
+    items = await _collect(chat_id, user)
+
+    chosen = None
+    if llm.enabled():
+        chosen = await llm.pick_and_summarize(items[:POOL_SIZE], topics, limit)
+    if chosen is None:  # LLM выключена или упала: обычный поиск по ключевым словам
+        chosen = _keyword_filter(items, topics)[:limit]
+
+    # Если лент не хватило, добираем новости по темам из поиска Google Новостей
+    if os.getenv("WEB_SEARCH_IN_DIGEST", "1") == "1" and topics and len(chosen) < limit:
+        extra = await search_news(topics, limit - len(chosen))
+        known = {i["link"] for i in chosen}
+        extra = [e for e in extra if e["link"] not in known]
+        sent = await db.get_sent(chat_id, [e["link"] for e in extra])
+        chosen += [e for e in extra if e["link"] not in sent]
+    return chosen[:limit]
+
+
+async def search_news(topics: list[str], limit: int) -> list[dict]:
+    """Ищет свежие новости по темам в интернете (Google Новости); LLM выбирает лучшие и пересказывает."""
+    results = await asyncio.gather(*(search_google_news(t) for t in topics[:3]), return_exceptions=True)
+    items = []
+    for topic, res in zip(topics[:3], results):
+        if isinstance(res, Exception):
+            log.warning("Поиск по теме %r не удался: %s", topic, res)
+            continue
+        items.extend(res)
+
+    seen, pool = set(), []
+    for i in sorted(items, key=lambda x: x["ts"], reverse=True):
+        key = i["title"].lower()
+        if not i["link"] or key in seen:
+            continue
+        seen.add(key)
+        pool.append(i)
+    pool = pool[:POOL_SIZE]
+
+    chosen = None
+    if llm.enabled():
+        chosen = await llm.pick_and_summarize(pool, topics, limit)
+    return chosen if chosen is not None else pool[:limit]
 
 
 def format_digest(items: list[dict]) -> str:

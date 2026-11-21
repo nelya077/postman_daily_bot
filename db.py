@@ -1,3 +1,5 @@
+import time
+
 import aiosqlite
 
 DB_PATH = "pochtalon.db"
@@ -27,10 +29,20 @@ async def init_db():
         await db.commit()
 
 
+async def user_exists(chat_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT 1 FROM users WHERE chat_id = ?", (chat_id,))
+        return await cur.fetchone() is not None
+
+
 async def get_user(chat_id: int) -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        await db.execute("INSERT OR IGNORE INTO users (chat_id) VALUES (?)", (chat_id,))
+        # last_sent = сейчас: первый авто-дайджест придёт через every_hours, а не сразу
+        await db.execute(
+            "INSERT OR IGNORE INTO users (chat_id, last_sent) VALUES (?, ?)",
+            (chat_id, time.time()),
+        )
         await db.commit()
         cur = await db.execute("SELECT * FROM users WHERE chat_id = ?", (chat_id,))
         return dict(await cur.fetchone())

@@ -5,6 +5,7 @@ import os
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
@@ -24,6 +25,13 @@ async def main():
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
+
+    await bot.set_my_commands([
+        BotCommand(command="menu", description="Главное меню"),
+        BotCommand(command="digest", description="Получить подборку сейчас"),
+        BotCommand(command="settings", description="Текущие настройки"),
+        BotCommand(command="help", description="Список команд"),
+    ])
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(tick, "interval", minutes=5, args=[bot])
