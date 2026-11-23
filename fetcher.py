@@ -3,15 +3,17 @@ import calendar
 import html
 import logging
 import re
-import socket
 from urllib.parse import quote_plus
 
+import aiohttp
 import feedparser
 
+import tls
 from sources import CATALOG
 
 log = logging.getLogger(__name__)
-socket.setdefaulttimeout(20)  # feedparser сам таймаут не задаёт
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PostmanDailyBot/1.0)"}
 
 
 def _clean(text: str) -> str:
@@ -19,16 +21,42 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(text)).strip()
 
 
-def _parse(url: str):
-    feed = feedparser.parse(url)
+async def _download(url: str) -> bytes | None:
+    """Скачивает ленту через aiohttp с проверенным SSL-контекстом (urllib в feedparser на macOS падает на сертификатах)."""
+    timeout = aiohttp.ClientTimeout(total=20)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=HEADERS) as session:
+            async with session.get(url, ssl=tls.context()) as resp:
+                if resp.status != 200:
+                    log.warning("Лента недоступна: %s (HTTP %s)", url, resp.status)
+                    return None
+                return await resp.read()
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        if "CERTIFICATE_VERIFY_FAILED" in str(e):
+            log.warning(
+                "Лента недоступна: %s (ошибка сертификата). Для российских сайтов нужен сертификат Минцифры: "
+                "укажите GIGACHAT_CA_BUNDLE в .env", url,
+            )
+        else:
+            log.warning("Лента недоступна: %s (%s)", url, e)
+        return None
+
+
+async def _load_feed(url: str):
+    content = await _download(url)
+    if content is None:
+        return None
+    feed = await asyncio.to_thread(feedparser.parse, content)
     if not feed.entries:
-        log.warning("Лента пуста или недоступна: %s (%s)", url, getattr(feed, "bozo_exception", "нет ошибки"))
+        log.warning("Лента пуста: %s (%s)", url, getattr(feed, "bozo_exception", "нет ошибки"))
     return feed
 
 
 async def fetch_source(key: str) -> list[dict]:
     name, url = CATALOG[key]
-    feed = await asyncio.to_thread(_parse, url)
+    feed = await _load_feed(url)
+    if feed is None:
+        return []
     items = []
     for e in feed.entries:
         published = getattr(e, "published_parsed", None)
@@ -49,7 +77,9 @@ async def search_google_news(query: str) -> list[dict]:
         + quote_plus(f"{query} when:2d")
         + "&hl=ru&gl=RU&ceid=RU:ru"
     )
-    feed = await asyncio.to_thread(_parse, url)
+    feed = await _load_feed(url)
+    if feed is None:
+        return []
     items = []
     for e in feed.entries:
         title = _clean(e.get("title", ""))

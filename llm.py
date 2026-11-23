@@ -11,6 +11,8 @@ import uuid
 
 import aiohttp
 
+import tls
+
 log = logging.getLogger(__name__)
 
 SYSTEM = (
@@ -25,7 +27,6 @@ KEY_VARS = ("GIGACHAT_AUTH_KEY", "GIGACHAT_API_KEY", "GIGACHAT_CREDENTIALS")
 _token: str | None = None
 _token_exp: float = 0.0
 _token_lock = asyncio.Lock()
-_ssl_ctx = None
 
 
 def _key() -> str:
@@ -46,26 +47,11 @@ def _base_url() -> str:
 
 
 def _ssl_param():
-    """Сертификат НУЦ Минцифры: путь в GIGACHAT_CA_BUNDLE (относительный путь считается от папки проекта).
-    GIGACHAT_VERIFY_SSL=0 отключает проверку (небезопасно, только для проверки)."""
-    global _ssl_ctx
+    """GIGACHAT_VERIFY_SSL=0 отключает проверку (небезопасно, только для проверки),
+    иначе общий контекст из tls.py (certifi + сертификат Минцифры из GIGACHAT_CA_BUNDLE)."""
     if os.getenv("GIGACHAT_VERIFY_SSL", "1") == "0":
         return False
-    ca = os.getenv("GIGACHAT_CA_BUNDLE", "").strip()
-    if not ca:
-        return True
-    if _ssl_ctx is None:
-        path = os.path.expanduser(ca)
-        if not os.path.isabs(path):
-            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
-        try:
-            ctx = ssl.create_default_context()
-            ctx.load_verify_locations(cafile=path)
-        except (OSError, ssl.SSLError):
-            log.error("GigaChat: не удалось прочитать сертификат %s. Проверьте GIGACHAT_CA_BUNDLE в .env", path)
-            return True
-        _ssl_ctx = ctx
-    return _ssl_ctx
+    return tls.context()
 
 
 async def _get_token(session) -> str | None:

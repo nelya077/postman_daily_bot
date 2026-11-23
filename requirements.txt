@@ -1,5 +1,6 @@
 aiogram>=3.13
 aiohttp>=3.9
+certifi
 aiosqlite>=0.20
 feedparser>=6.0
 apscheduler>=3.10,<4
