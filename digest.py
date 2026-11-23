@@ -106,16 +106,30 @@ async def search_news(topics: list[str], limit: int) -> list[dict]:
     return chosen if chosen is not None else pool[:limit]
 
 
-def format_digest(items: list[dict]) -> str:
-    lines = ["📬 <b>Почтальон: подборка новостей</b>", ""]
+PAGE_LIMIT = 3800  # лимит Telegram 4096 символов, берём с запасом на теги
+
+
+def _format_item(i: dict) -> str:
+    link = html.escape(i["link"], quote=True)
+    lines = [f'• <a href="{link}">{html.escape(i["title"])}</a> <i>({html.escape(i["source"])})</i>']
+    if i["summary"]:
+        short = i["summary"][:140] + ("…" if len(i["summary"]) > 140 else "")
+        lines.append(html.escape(short))
+    return "\n".join(lines)
+
+
+def format_digest(items: list[dict]) -> list[str]:
+    """Собирает подборку в одно или несколько сообщений (каждое короче лимита Telegram)."""
+    pages, current = [], "📬 <b>Почтальон: подборка новостей</b>\n\n"
     for i in items:
-        link = html.escape(i["link"], quote=True)
-        lines.append(f'• <a href="{link}">{html.escape(i["title"])}</a> <i>({html.escape(i["source"])})</i>')
-        if i["summary"]:
-            short = i["summary"][:140] + ("…" if len(i["summary"]) > 140 else "")
-            lines.append(html.escape(short))
-        lines.append("")
-    return "\n".join(lines).strip()
+        block = _format_item(i) + "\n\n"
+        if len(current) + len(block) > PAGE_LIMIT and current.strip():
+            pages.append(current.rstrip())
+            current = ""
+        current += block
+    if current.strip():
+        pages.append(current.rstrip())
+    return pages
 
 
 async def send_digest(bot: Bot, chat_id: int, user: dict, manual: bool = False) -> bool:
@@ -125,7 +139,8 @@ async def send_digest(bot: Bot, chat_id: int, user: dict, manual: bool = False) 
             await bot.send_message(chat_id, "Новых новостей по вашим фильтрам пока нет.")
         return False
     try:
-        await bot.send_message(chat_id, format_digest(items), disable_web_page_preview=True)
+        for page in format_digest(items):
+            await bot.send_message(chat_id, page, disable_web_page_preview=True)
     except TelegramForbiddenError:
         log.info("Пользователь %s заблокировал бота", chat_id)
         return False

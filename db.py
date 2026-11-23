@@ -1,8 +1,10 @@
+import os
 import time
 
 import aiosqlite
 
-DB_PATH = "pochtalon.db"
+# база лежит рядом с кодом, а не там, откуда запущен бот
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pochtalon.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -66,15 +68,17 @@ async def all_users() -> list[dict]:
 
 
 async def get_sent(chat_id: int, links: list[str]) -> set[str]:
-    if not links:
-        return set()
-    marks = ",".join("?" * len(links))
+    found: set[str] = set()
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            f"SELECT link FROM sent_news WHERE chat_id = ? AND link IN ({marks})",
-            (chat_id, *links),
-        )
-        return {r[0] for r in await cur.fetchall()}
+        for i in range(0, len(links), 500):  # SQLite ограничивает число параметров в запросе
+            chunk = links[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            cur = await db.execute(
+                f"SELECT link FROM sent_news WHERE chat_id = ? AND link IN ({marks})",
+                (chat_id, *chunk),
+            )
+            found.update(r[0] for r in await cur.fetchall())
+    return found
 
 
 async def mark_sent(chat_id: int, links: list[str]):

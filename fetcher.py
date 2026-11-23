@@ -1,12 +1,17 @@
 import asyncio
 import calendar
 import html
+import logging
 import re
+import socket
 from urllib.parse import quote_plus
 
 import feedparser
 
 from sources import CATALOG
+
+log = logging.getLogger(__name__)
+socket.setdefaulttimeout(20)  # feedparser сам таймаут не задаёт
 
 
 def _clean(text: str) -> str:
@@ -15,7 +20,10 @@ def _clean(text: str) -> str:
 
 
 def _parse(url: str):
-    return feedparser.parse(url)
+    feed = feedparser.parse(url)
+    if not feed.entries:
+        log.warning("Лента пуста или недоступна: %s (%s)", url, getattr(feed, "bozo_exception", "нет ошибки"))
+    return feed
 
 
 async def fetch_source(key: str) -> list[dict]:

@@ -29,6 +29,7 @@ async def main():
     await bot.set_my_commands([
         BotCommand(command="menu", description="Главное меню"),
         BotCommand(command="digest", description="Получить подборку сейчас"),
+        BotCommand(command="search", description="Найти новости в интернете"),
         BotCommand(command="settings", description="Текущие настройки"),
         BotCommand(command="help", description="Список команд"),
     ])
@@ -37,8 +38,15 @@ async def main():
     scheduler.add_job(tick, "interval", minutes=5, args=[bot])
     scheduler.start()
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        scheduler.shutdown(wait=False)
+        await bot.session.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass  # остановка через Ctrl+C / красный квадрат в PyCharm

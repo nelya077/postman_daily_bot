@@ -66,6 +66,9 @@ def back_row() -> list:
 
 
 async def edit(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup):
+    if not hasattr(cb.message, "edit_text"):  # сообщение слишком старое (недоступно боту)
+        await cb.answer("Это меню устарело, откройте /menu заново", show_alert=True)
+        return
     try:
         await cb.message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest:
@@ -261,7 +264,7 @@ async def toggle_source(cb: CallbackQuery):
     await db.update_user(cb.message.chat.id, sources=",".join(ordered))
     try:
         await cb.message.edit_reply_markup(reply_markup=sources_kb(ordered))
-    except TelegramBadRequest:
+    except (TelegramBadRequest, AttributeError):
         pass
     await cb.answer()
 
@@ -377,4 +380,5 @@ async def search_cmd(m: Message, command: CommandObject):
     if not items:
         await m.answer("Ничего не нашёл. Попробуйте другую тему или повторите позже.")
         return
-    await m.answer(format_digest(items), disable_web_page_preview=True)
+    for page in format_digest(items):
+        await m.answer(page, disable_web_page_preview=True)
